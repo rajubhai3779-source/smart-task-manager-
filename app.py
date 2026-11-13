@@ -1,7 +1,6 @@
 import json
+import urllib.request
 import streamlit as st
-from google import genai
-from pydantic import BaseModel
 import database as db
 
 db.init_db()
@@ -9,12 +8,21 @@ db.init_db()
 st.set_page_config(page_title="Smart Task Manager", page_icon="✅")
 st.title("✅ Smart AI Task Manager")
 
-class TaskItem(BaseModel):
-    title: str
-    priority: str
-
-class TaskList(BaseModel):
-    tasks: list[TaskItem]
+def generate_ai_tasks(api_key, goal):
+    url = f"https://googleapis.com{api_key}"
+    prompt = (
+        f"Break this goal into 3 to 5 clear, actionable tasks with priority (High, Medium, or Low). "
+        f"Return ONLY a valid JSON array of objects, each with 'title' and 'priority' keys. "
+        f"Do not include markdown formatting. Goal: {goal}"
+    )
+    payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode("utf-8")
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    
+    with urllib.request.urlopen(req) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        text = text.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        return json.loads(text)
 
 with st.sidebar:
     st.header("✨ AI Task Generator")
@@ -26,21 +34,14 @@ with st.sidebar:
             st.error("Please enter an API key first.")
         elif goal_input:
             with st.spinner("Breaking down your goal..."):
-                client = genai.Client(api_key=api_key)
-                prompt = f"Break this goal into 3 to 5 clear, actionable tasks with priority (High, Medium, or Low): {goal_input}"
-                response = client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=prompt,
-                    config={
-                        "response_mime_type": "application/json",
-                        "response_schema": TaskList,
-                    },
-                )
-                result = json.loads(response.text)
-                for item in result["tasks"]:
-                    db.add_task(item["title"], item["priority"])
-                st.success("Tasks added!")
-                st.rerun()
+                try:
+                    tasks_list = generate_ai_tasks(api_key, goal_input)
+                    for item in tasks_list:
+                        db.add_task(item["title"], item.get("priority", "Medium"))
+                    st.success("Tasks added!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error generating tasks: {e}")
 
 st.subheader("Add a Task Manually")
 col1, col2, col3 = st.columns([3, 1.5, 1])
@@ -69,10 +70,7 @@ else:
                 db.toggle_task(task_id, completed)
                 st.rerun()
         with c2:
-            if completed:
-                st.markdown(f"~~{title}~~")
-            else:
-                st.markdown(f"**{title}**")
+            st.markdown(f"~~{title}~~" if completed else f"**{title}**")
         with c3:
             badge_color = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}.get(priority, "⚪")
             st.write(f"{badge_color} {priority}")
@@ -80,3 +78,4 @@ else:
             if st.button("🗑️", key=f"del_{task_id}"):
                 db.delete_task(task_id)
                 st.rerun()
+                
